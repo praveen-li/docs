@@ -19,8 +19,10 @@
 
 ##  1. Problem Statement:
 > While s/w upgrade to FRR docker or while maintenence FRR docker restart, minimum disturbance to Control Plane Route (i.e Kernel Route) should happen. For some organisation, it is critical to keep control plane unreachability less than ~1 secs for critical services to work with switch while FRR docker restart.
-Today Zebra can run with -r flag to retain routes in kernel. But during startup:
+> 
+>Today Zebra can run with -r flag to retain routes in kernel. But during startup:
 i.) Without -k flag: Zebra cleans all kernel routes and insert them back if learned via BGPD/OSPF or any other protocol again. This may take 10-15 secs. [Data copied below.]
+>
 > ii.) With -k flags: Zebra rib contains stale routes, which will not be deleted ever. Also depending on preference calculated by zebra, these stale route result in no update to kernel and FPM.
 
 ## 2. Observation:
@@ -276,7 +278,7 @@ Deleted 192.168.0.7 via 10.0.0.3 dev Ethernet4 proto 186 src 10.1.0.32 metric 20
 
 ## 4. Approach Selected
 
-Approch 3 : To change Zebra RIB Calculation is chossen to address FRR-Kernel Reconciliation after condereding all above comparision points.
+Approach 3 : Zebra RIB Calculation is chosen to address FRR-Kernel Reconciliation after considering all above comparison points.
 
 ## 5. Low Level details:
 
@@ -290,17 +292,23 @@ Above image explains the Zebra behavior right now on startup with -k (keep_kerne
 
 2.) Zebra pushes these routes in RIB Table as per family of route.
 
-3.) Rnode creation and route_entry creation of old kernel route is done and route_entry is inserted in Rnode of the destprefix. Next-hops for this route will be markes as active, since this route is learned from Kernel. Note: This will result in call to rib_process, but since Rnode contains only one route which is already in FIB, so rib_process will result in NO_OP.
+3.) Rnode creation and route_entry creation of old kernel route is done and route_entry is inserted in Rnode of the destprefix. 
+    Next-hops for this route will be markes as active, since this route is learned from Kernel.
+    Note: This will result in call to rib_process, but since Rnode contains only one route which is already in FIB, so rib_process will result in NO_OP.
 
 4.) Bgpd will queue new routes to Zebra after getting first keepalive (implicit EOR) from bgp peer.
 
 5.) Zebra will process new routes and call rib_add() for this route.
 
-6.) A new route_entry will be created and will be inserted in correct Rnode. There may be 2 scenarios here, a.) Rnode already contains other routes including old kernel routes or new Rnode is created for this route_entry.
+6.) A new route_entry will be created and will be inserted in correct Rnode. There may be 2 scenarios here, 
+    a.) Rnode already contains other routes including old kernel routes or 
+    b.) new Rnode is created for this route_entry.
 
-7.) Updated Rnode will be queued for rib processing. During rib processing, Zebra will run best route selection, which on most of the FRR version will select old kernel route which is already marked as active in FIB.
+7.) Updated Rnode will be queued for rib processing. During rib processing, Zebra will run best route selection, 
+    which on most of the FRR version will select old kernel route which is already marked as active in FIB.
 
-8.) No update will be sent to Kernel and FPM, which may result in route deletion from APP_DB as per current Fpmsyncd DB reconciliation code. Update will be sent only for those route for which stale kernel route is not present.
+8.) No update will be sent to Kernel and FPM, which may result in route deletion from APP_DB as per current Fpmsyncd DB reconciliation code. 
+    Update will be sent only for those route for which stale kernel route is not present.
 ```
 
 Current behavior will result in:
@@ -323,19 +331,26 @@ A timer will start (default 60 secs) to clean stale kernel routes.
 
 2.) Zebra pushes these routes in RIB Table as per family of route.
 
-3.) Rnode creation and route_entry creation of old kernel route is done and route_entry is inserted in Rnode of the destprefix. Next-hops for this route will be markes as active, since this route is learned from Kernel. Note: This will result in call to rib_process, but since Rnode contains only one route which is already in FIB, so rib_process will result in NO_OP.
+3.) Rnode creation and route_entry creation of old kernel route is done and route_entry is inserted in Rnode of the destprefix. 
+    Next-hops for this route will be markes as active, since this route is learned from Kernel. 
+    Note: This will result in call to rib_process, but since Rnode contains only one route which is already in FIB, so rib_process will result in NO_OP.
 
 4.) Bgpd will queue new routes to Zebra after getting first keepalive (implicit EOR) from bgp peer.
 
 5.) Zebra will process new routes and call rib_add() for this route.
 
-6.) A new route_entry will be created and will be inserted in correct Rnode. There may be 2 scenarios here, a.) Rnode already contains other routes including old kernel routes or new Rnode is created for this route_entry. In first case, if previously exist route is marked with ZEBRA_FLAG_KERNEL_STALE_RT, then previous route will be marked for deletion.
+6.) A new route_entry will be created and will be inserted in correct Rnode. There may be 2 scenarios here, 
+    a.) Rnode already contains other routes including old kernel routes or 
+    b.) new Rnode is created for this route_entry. 
+    In first case, if previously exist route is marked with ZEBRA_FLAG_KERNEL_STALE_RT, then previous route will be marked for deletion.
 
-7.) Updated Rnode will be queued for rib processing. During rib processing, Zebra will run best route selection, which will select newly learned route since stale kernel route is marked for deletion.
+7.) Updated Rnode will be queued for rib processing. During rib processing, Zebra will run best route selection, 
+    which will select newly learned route since stale kernel route is marked for deletion.
 
 8.) Update will be sent to Kernel and FPM in all cases.
 
-9.) Upon timer expire, a sweep function will mark all reamining routes with ZEBRA_FLAG_KERNEL_STALE_RT flag for deletion. Eventually rib_process function will free stale route.
+9.) Upon timer expire, a sweep function will mark all reamining routes with ZEBRA_FLAG_KERNEL_STALE_RT flag for deletion. 
+    Eventually rib_process function will free stale route.
 
 10.) This will result in delete update to kernel and FPM.
 ```
@@ -493,15 +508,15 @@ File zebra\zebra_rib.
 
 Unit Test Plan includes below 3 test cases: [All 3 test cases will be repeated for IPV4 and IPV6 family]
 
-### 7.1 Summary UTP
+### 7.1 Test Cases.
 
-Test Case 1.) Ping\Fast Ping 3 destinations using PTF from the source address which used BGP Routes. Ping will run continuosly during FRR restart.
+#### Test Case 1.) Ping\Fast Ping 3 destinations using PTF from the source address which used BGP Routes. Ping will run continuosly during FRR restart.
     -  Create Ping packet in PTF.
     -  Create Expected Packet.
     -  Sent Ping packet on port 1.
     -  Verify expected Packet on Port 2.
 
-Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
+#### Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
 
     - Have 2 BGP peers publishing 5 prefixes each, where 2 prefixes are published from both peers.
     - Observe expected routes in Zebra and Kernel.
@@ -513,7 +528,7 @@ Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
     - Start FRR.
     - Observe Zebra logs, ip monitor, kernel routes and Zebra routes.
 
-3.) Scaled testing: Perform FRR restart with  > 6 K routes published from at least 4 peers. [6500 routes with 32 peers, as per T1 topology], [6k routes and 4 BGP peers as per T0]
+#### Test Case 3.) Scaled testing: Perform FRR restart with  > 6 K routes published from at least 4 peers. [6500 routes with 32 peers, as per T1 topology], [6k routes and 4 BGP peers as per T0]
 
     - Have atleast >3 BGP peers publishing same 6k prefixes. Rest BGP peers can publish 10-15 routes each which are unique.
     - Observe expected routes in Zebra and Kernel.
@@ -523,7 +538,7 @@ Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
     - Start FRR.
     - Observe Zebra logs, ip monitor, kernel routes and Zebra routes.
 
-### 7.2 Detailed UTP:
+### 7.2 Details of Test Cases:
 
 #### Test Case 1.) Ping\Fast Ping 3 destinations using PTF from the source address which used BGP Routes in DUT. Ping will run continuosly during FRR restart.
 
