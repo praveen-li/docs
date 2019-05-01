@@ -1,15 +1,25 @@
-# FRR-KERNEL RECONCILIATION DESIGN
 
-# PROBLEM STATMENT:
+##  FRR-KERNEL RECONCILIATION DESIGN
+
+## Table of Contents
+- [ 1. Problem Statement](#1-problem-statement)
+- [2. Observation](#2-observation)
+- [3. Proposed Solution and comparison](#3-proposed-solution-and-comparison)
+- [4. Approach Selected](#4-approach-selected)
+- [5. Low Level details](#5-low-level-details)
+- [6. Code Details](#6-code-details)
+- [7. Unit Test Plan](#7-unit-test-plan)
+
+##  1. Problem Statement:
 > While s/w upgrade to FRR docker or while maintenence FRR docker restart, minimum disturbance to Control Plane Route (i.e Kernel Route) should happen. For some organisation, it is critical to keep control plane unreachability less than ~1 secs for critical services to work with switch while FRR docker restart.
 Today Zebra can run with -r flag to retain routes in kernel. But during startup:
 i.) Without -k flag: Zebra cleans all kernel routes and insert them back if learned via BGPD/OSPF or any other protocol again. This may take 10-15 secs. [Data copied below.]
 > ii.) With -k flags: Zebra rib contains stale routes, which will not be deleted ever. Also depending on preference calculated by zebra, these stale route result in no update to kernel and FPM.
 
-# Observation:
+## 2. Observation:
 > Below analysis were done before deciding on the approaches, which can be used to solve above problem.
 
-- Zebra restart with -k -r options. **
+### 2.1  Zebra restart with -k -r options.
 Before restart:
 ```
 B>* 100.1.0.32/32 [20/0] via 10.0.0.63, Ethernet124, 00:01:46
@@ -40,7 +50,7 @@ C>* 172.25.11.0/24 is directly connected, eth0
 Ip monitor: Zebra adds no new route, because it already preferred kernel routes.
 
 ----
-- Kernel static route with same prefix and same NHs.
+### 2.2 Kernel static route with same prefix and same NHs.
 
 [Note: Kernel Static route analysis was done in more detail, but is not included in this Design Doc. Because kenrel static routes are not used in detail in SONiC.]
 
@@ -103,7 +113,7 @@ After adding kernel Static Routes:
 After restart routes remains same as above in kernel and FPM, because no updates was sent from Zebra.
 
 -----
-- Timing between route deletion in Kernel during Zebra restart and route addition in Kernel, when Zebra runs without option -k. [FRR-3.0.3]
+###  2.3 Timing between route deletion in Kernel during Zebra restart and route addition in Kernel, when Zebra runs without option -k. [FRR-3.0.3]
 Below start_del_time in Epoch shows when first kernel route was deleted.
 1554926630 = Wednesday, April 10, 2019 20:03:50
 ```
@@ -121,7 +131,7 @@ Apr 10 20:04:13.881074 falco-test-dut01 NOTICE zebra[58]: frr-kernel: Added 1000
 ```
 It ~23 secs between first kernel route deletion and to add 6001 routes.
 
-On FRR 6.0.2:
+####  2.3.1 On FRR 6.0.2:
 1555633942 = Friday, April 19, 2019 00:32:22
 ```
 Apr 19 00:32:24.747571 falco-test-dut01 NOTICE bgp#zebra[86]: frr-kernel: Added 1 routes. Del time 1555633942
@@ -139,7 +149,7 @@ Apr 19 00:32:29.072326 falco-test-dut01 NOTICE bgp#zebra[86]: frr-kernel: Added 
 It ~7 secs between first kernel route deletion and to add 6001 routes.
 
 ----
-Static ARP Entries Analysis:
+### 2.5 Static ARP Entries Analysis:
 Add Static ARP Entry before Zebra Restart:
 ```
 sudo ip -4 neigh add 172.16.16.4 dev Ethernet120 lladdr 00:11:22:33:44:55
@@ -199,7 +209,7 @@ Restart ZEbra\FRR will have no impact on Neigh_Table.
 
 ----
 
-- Kernel keeps only one copy of Routes from one source.
+### 2.6 Kernel keeps only one copy of Routes from one source.
 This is important because if zebra sends multiple adds to kernel for same route via netlink, where rtm_protocol field is same as before then kernel will only update this entry, but will not add a new entry.
 To check this, multiple add\update were sent to kernel from zebra.
 ```
@@ -235,36 +245,37 @@ admin@falco-test-dut01:~$ ip monitor
 Deleted 192.168.0.7 via 10.0.0.3 dev Ethernet4 proto 186 src 10.1.0.32 metric 20
 ```
 
-## Proposed Solution and comparision:
+## 3. Proposed Solution and comparison:
+
 
 | Field | FPMSYNCD | ORCHAGENT | ZEBRA RIB |
 | ------ | ------ |------ | ------ |
-| Description	| Utilize current approach of DB reconciliation in FPMSyncd. Once reconciliation is done, send the netlink to kernel with add/del/change to APP_DB.	| Utilize current approach of DB reconciliation in FPMSyncd. Inside Orchagent, When RouteOrch class processes these APP_DB route entries to update ASIC_DB, same time send the netlink to kernel. |	Read kernel Routes while Zebra starts up, and change Zebra RIB calculation to reconcile with old kernel route. After reconciliation , Send an update to kernel and FPM about new route. Also delete stale kernel routes from rib after reconciliation. FpmSyncd DB reconcilation code may go away.  |
-|Special handling while System Restart (warm reboot). | 	Since Kernel route will be deleted due to restart, FPMSyncd needs to populate kernel routes while restoration process. While restoration FPMSyncd Reads APP_DB Routes in a MAP. | 	This approach needs no special handling for this case, since after coming up Orchagent will recompile APP_DB route entries to create new ASIC_DB. Kernel routes will be installed during this compilation. | 	During startup Zebra has to read routes from APP_DB for restoration. Which means Many APIs must be exposed to Zebra. This may not be needed, if current APP_DB reconciliation remains in FPMsyncd. But it is good to deprecate FpmSyncd DB reconcilation, with that, kernel route should be populated similar to neigh table from APP_DB after restart. |
-| SWSS docker restart |	No special case handling. |	Orchagent will recompile APP_DB route entries to create new ASIC_DB. Orchagent will send another netlink to kernel.  If no change (or just add\change) in DB, Kernel routes will remain same. Because kernel keeps only one route per prefix from Zebra. If route del in APP_DB was done during swss restart. Orchagent will send netlink del msg to kernel, because events are queued in DB. |	No special case handling. |
-| OwnerShip |	FPMSyncd will be clear owner of route both in Kernel and DB. May rename as RouteMgrD.|	Source of truth will be APP_DB for kernel Routes. FPMSyncd will add APP_DB route and Orchagent will add kernel Route.	 | Similar as today. Zebra will be Routing Manager and owner.|
-| If Kernel Netlink fails with ENOMEM. 	| No retry mechanism. Should system continue working, as per today No, because Zebra exits in such cases.	 | No retry mechanism. Should system continue working, as per today No, because Zebra exits in such cases. | No retry mechanism. Should system continue working, as per today No, because Zebra exits in such cases.|
-| Kernel Fails with EAGAIN. |	No retry mechanism. Should system continue working, as per today YES, because Zebra assume it as success case. APP_DB and kernel will not be in sync. | Same |	Same |
-| Support More Families like MPLS, CLNS and VRF later. |	FPMSyncd will need Individual deserialization mechanism in place to convert from Netlink to Tuple for each family. With this approach serialization mechanism will be needed in FPMsyncd. |	FPMSyncd will need Individual deserialization mechanism in place to convert from Netlink to Tuple for each family. With this approach serialization mechanism will be needed in Orchagent.	 | Separate handing per Family is not needed, as of now, Zebra does not support MPLS. |
-| EOR Handling. |	EOR must be passed\extended till FPMSyncd, so that  FPMSyncd reconciliation steps can be executed as per EOR arrival. | 	EOR must be passed\extended till FPMSyncd, so that  FPMSyncd reconciliation steps can be executed as per EOR arrival.	| EOR processing may remain till Zebra. |
-| Knob known to daemon. | FPMSyncd must know about warm reboot knob, frr restart knob and warm restart FRR timer. (Already done). | 	Same as today. |	Zebra must have an option to exceute kernel reconciliation at start. |
-| When static (or kernel learned) Route is Added before FRR restart. [See Observations section for complete data.]	| When Static Route is added, Zebra learns about it and sends a delete to kernel and FPM. So kernel and FPM keep only one copy of route for this prefix.  After Zebra Restart:  [ADD= Zebra learns same route, Change = Zebra learns same prefix with NH change, DEL = Zebra does not learn same prefix.]  # Case ADD: After restart Zebra will learn kernel static route from kernel while start up. And Zebra will learn same prefix Route via BGP. Zebra will choose kernel route in RIB calculation. Zebra will send no update to APP_DB and kernel. [**This case shows rtm_protocol = RTPROT_ZEBRA in netlink message is necessary, else Zebra would not have considered Static Route in RIB Calculation.] As per current code, it will delete APP_DB Route. [APP_DB reconciliation will not delete Route if rtm_protocol is stored in DB.] # Case Change: Same as ADD. # Case Del: Same as ADD, except Zebra will not learn any BGP Route for same prefix. | Same | Rib Calculation will not change for Static or kernel learned route. It will work fine without FpmSyncd DB reconciliation code. |
-| When static (or kernel learned) Route is Added during FRR restart. i.e. Zebra was down when kernel route was added.	| This is hard to recover scenario. Since Zebra is down while static route is added to kernel. No delete message is received by kernel and FPM. As a result kernel has 2 routes for same prefix and APP_DB has zebra route [non static route] in DB. | Same | Same |
+| Description   | Utilize current approach of DB reconciliation in FPMSyncd. Once reconciliation is done, send the netlink to kernel with add/del/change to APP_DB. | Utilize current approach of DB reconciliation in FPMSyncd. Inside Orchagent, When RouteOrch class processes these APP_DB route entries to update ASIC_DB, same time send the netlink to kernel. | Read kernel Routes while Zebra starts up, and change Zebra RIB calculation to reconcile with old kernel route. After reconciliation , Send an update to kernel and FPM about new route. Also delete stale kernel routes from rib after reconciliation. FpmSyncd DB reconcilation code may go away.  |
+|Special handling while System Restart (warm reboot). |     Since Kernel route will be deleted due to restart, FPMSyncd needs to populate kernel routes while restoration process. While restoration FPMSyncd Reads APP_DB Routes in a MAP. |   This approach needs no special handling for this case, since after coming up Orchagent will recompile APP_DB route entries to create new ASIC_DB. Kernel routes will be installed during this compilation. |    During startup Zebra has to read routes from APP_DB for restoration. Which means Many APIs must be exposed to Zebra. This may not be needed, if current APP_DB reconciliation remains in FPMsyncd. But it is good to deprecate FpmSyncd DB reconcilation, with that, kernel route should be populated similar to neigh table from APP_DB after restart. |
+| SWSS docker restart | No special case handling. | Orchagent will recompile APP_DB route entries to create new ASIC_DB. Orchagent will send another netlink to kernel.  If no change (or just add\change) in DB, Kernel routes will remain same. Because kernel keeps only one route per prefix from Zebra. If route del in APP_DB was done during swss restart. Orchagent will send netlink del msg to kernel, because events are queued in DB. | No special case handling. |
+| OwnerShip |   FPMSyncd will be clear owner of route both in Kernel and DB. May rename as RouteMgrD.|  Source of truth will be APP_DB for kernel Routes. FPMSyncd will add APP_DB route and Orchagent will add kernel Route.    | Similar as today. Zebra will be Routing Manager and owner.|
+| If Kernel Netlink fails with ENOMEM.  | No retry mechanism. Should system continue working, as per today No, because Zebra exits in such cases.    | No retry mechanism. Should system continue working, as per today No, because Zebra exits in such cases. | No retry mechanism. Should system continue working, as per today No, because Zebra exits in such cases.|
+| Kernel Fails with EAGAIN. |   No retry mechanism. Should system continue working, as per today YES, because Zebra assume it as success case. APP_DB and kernel will not be in sync. | Same |  Same |
+| Support More Families like MPLS, CLNS and VRF later. |    FPMSyncd will need Individual deserialization mechanism in place to convert from Netlink to Tuple for each family. With this approach serialization mechanism will be needed in FPMsyncd. | FPMSyncd will need Individual deserialization mechanism in place to convert from Netlink to Tuple for each family. With this approach serialization mechanism will be needed in Orchagent.   | Separate handing per Family is not needed, as of now, Zebra does not support MPLS. |
+| EOR Handling. |   EOR must be passed\extended till FPMSyncd, so that  FPMSyncd reconciliation steps can be executed as per EOR arrival. |     EOR must be passed\extended till FPMSyncd, so that  FPMSyncd reconciliation steps can be executed as per EOR arrival.   | EOR processing may remain till Zebra. |
+| Knob known to daemon. | FPMSyncd must know about warm reboot knob, frr restart knob and warm restart FRR timer. (Already done). |     Same as today. |    Zebra must have an option to exceute kernel reconciliation at start. |
+| When static (or kernel learned) Route is Added before FRR restart. [See Observations section for complete data.]  | When Static Route is added, Zebra learns about it and sends a delete to kernel and FPM. So kernel and FPM keep only one copy of route for this prefix.  After Zebra Restart:  [ADD= Zebra learns same route, Change = Zebra learns same prefix with NH change, DEL = Zebra does not learn same prefix.]  # Case ADD: After restart Zebra will learn kernel static route from kernel while start up. And Zebra will learn same prefix Route via BGP. Zebra will choose kernel route in RIB calculation. Zebra will send no update to APP_DB and kernel. [**This case shows rtm_protocol = RTPROT_ZEBRA in netlink message is necessary, else Zebra would not have considered Static Route in RIB Calculation.] As per current code, it will delete APP_DB Route. [APP_DB reconciliation will not delete Route if rtm_protocol is stored in DB.] # Case Change: Same as ADD. # Case Del: Same as ADD, except Zebra will not learn any BGP Route for same prefix. | Same | Rib Calculation will not change for Static or kernel learned route. It will work fine without FpmSyncd DB reconciliation code. |
+| When static (or kernel learned) Route is Added during FRR restart. i.e. Zebra was down when kernel route was added.   | This is hard to recover scenario. Since Zebra is down while static route is added to kernel. No delete message is received by kernel and FPM. As a result kernel has 2 routes for same prefix and APP_DB has zebra route [non static route] in DB. | Same | Same |
 | ARP/NDP is learned which has same prefix as zebra route. | After learning, Kernel will add ARP in neigh table which will have pointer from route table, but will not have an entry in route table. So Zebra and FPM will play no role in it because they never know about the ARP entry. From neighsyncd, ARP entry will be installed in APP_DB, then ASIC_DB and then in H/W. So H/W will learn about same prefix as neighbor and as Route. H/W behavior is out of scope because it may vary.
 | **Brief Implementation details.** |
-| Zebra code changes: |	Zebra uses kernel_route_rib() to add/del/change in kernel route. kernel_route_rib() calls netlink_route_multipath(). In netlink_route_multipath(), update must be blocked for single\multi path route to kernel. Propagate EOR down to FPMSyncd after sending routes update to FPMSyncd. Note: Zebra will be started with -r option (Retain kernel Route option) but without -k option. So After restart Zebra will try to delete all Zebra routes from kernel, but due to block in netlink_route_multipath(), no change will go to kernel. This Delete will go to FPM for previous Zebra Routes, but this is fine because FPMSyncd keeps only one entry for each destprefix. So at last the final update will come into effect. | Same as Fpmsyncd | During startup in netlink_route_change_read_unicast(), all stale zebra routes learned from kernel will be marked with a special flag. If a route is learned for same prefix then stale route will be marked for deletion while adding new route in rib_add_multipath(). For remaining stale routes, a sweep function will be called with EOR or with timer. An option will be introduced in Zebra to enable kernel reconcile functionality. |
-| FPMSyncd Code changes	| RouteTableWarmStartHelper will be inherited from WarmStartHelper class, which will override  WarmStartHelper::reconcile() to send netlink message to kernel while updating DB. FpmSyncd needs to handle EOR message and call reconciliation when arrive. To handle warm reboot case. Similar handler must be called from runRestoration(). Netlink message creation part should be implemented for each family. | FpmSyncd needs to handle EOR message and call reconciliation when arrive. | FpmSyncd DB reconciliation may be deprecated. |
-| Orchagent Code Changes |	N/A	| In RouteOrch Class functions, whenever SaiRedis API call is done to update ASIC_DB, a call to netlink_kernel_route() must be done to sent netlink msg to kernel. Netlink message creation part should be implemented for each family. | N/A |
+| Zebra code changes: | Zebra uses kernel_route_rib() to add/del/change in kernel route. kernel_route_rib() calls netlink_route_multipath(). In netlink_route_multipath(), update must be blocked for single\multi path route to kernel. Propagate EOR down to FPMSyncd after sending routes update to FPMSyncd. Note: Zebra will be started with -r option (Retain kernel Route option) but without -k option. So After restart Zebra will try to delete all Zebra routes from kernel, but due to block in netlink_route_multipath(), no change will go to kernel. This Delete will go to FPM for previous Zebra Routes, but this is fine because FPMSyncd keeps only one entry for each destprefix. So at last the final update will come into effect. | Same as Fpmsyncd | During startup in netlink_route_change_read_unicast(), all stale zebra routes learned from kernel will be marked with a special flag. If a route is learned for same prefix then stale route will be marked for deletion while adding new route in rib_add_multipath(). For remaining stale routes, a sweep function will be called with EOR or with timer. An option will be introduced in Zebra to enable kernel reconcile functionality. |
+| FPMSyncd Code changes | RouteTableWarmStartHelper will be inherited from WarmStartHelper class, which will override  WarmStartHelper::reconcile() to send netlink message to kernel while updating DB. FpmSyncd needs to handle EOR message and call reconciliation when arrive. To handle warm reboot case. Similar handler must be called from runRestoration(). Netlink message creation part should be implemented for each family. | FpmSyncd needs to handle EOR message and call reconciliation when arrive. | FpmSyncd DB reconciliation may be deprecated. |
+| Orchagent Code Changes |  N/A | In RouteOrch Class functions, whenever SaiRedis API call is done to update ASIC_DB, a call to netlink_kernel_route() must be done to sent netlink msg to kernel. Netlink message creation part should be implemented for each family. | N/A |
 
-## Approach Selected
+## 4. Approach Selected
 
 Approch 3 : To change Zebra RIB Calculation is chossen to address FRR-Kernel Reconciliation after condereding all above comparision points.
 
-## Low Level details: (including code details)
+## 5. Low Level details:
 
-- Before Fix:
+### 5.1 Before Fix:
 
-<Image1>
+![](https://github.com/praveen-li/docs/blob/master/Before%20frr_kernel%20fix.png)
 
 Above image explains the Zebra behavior right now on startup with -k (keep_kernel_mode option.
 ```
@@ -286,15 +297,16 @@ Above image explains the Zebra behavior right now on startup with -k (keep_kerne
 ```
 
 Current behavior will result in:
+```
 
 1.) Route deletion from APP_DB.
 
 2.) Stale route in Kernel.
 
 3.) Stale routes in Zebra RIB.
+```
 
-
-- After Fix:
+### 5.2 After Fix:
 
 <Image2>
 
@@ -322,15 +334,16 @@ A timer will start (default 60 secs) to clean stale kernel routes.
 ```
 
 After fix, it will result in:
-
+```
 1.) Kernel and FPM getting updated only when (and as soon as) new route is learned.
 
 2.) Stale routes in Kernel and fpm will be cleaned after timeout.
 
 3.) No Stale routes in Zebra RIB.
+```
 
-## Code Details:
--   new option to zebra: File main.c
+## 6. Code Details:
+-   new option to zebra: 
 
 A new option -K <secs> is added to zebra. -K is choosed to match with -k (small -k) because both deals with stale kernel routes.
 
@@ -377,7 +390,9 @@ int main(int argc, char **argv)
 +                       break;
  ```
 
-1.) Zebra reads kernel routes including previous instance of Zebra routes and mark them with ZEBRA_FLAG_KERNEL_STALE_RT. A timer will start (default 60 secs) to clean stale kernel routes.
+1.) Zebra reads kernel routes including previous instance of Zebra routes and mark them with ZEBRA_FLAG_KERNEL_STALE_RT.
+
+ A timer will start (default 60 secs) to clean stale kernel routes.
 
 File: zebra/main.c
 ```
@@ -467,17 +482,17 @@ File zebra\zebra_rib.
 10.) This will result in delete update to kernel and FPM.
 
 
-## Unit Test Plan:
+## 7. Unit Test Plan:
 
 Unit Test Plan includes below 3 test cases: [All 3 test cases will be repeated for IPV4 and IPV6 family]
 
-**Summary:**
+### 7.1 Summary UTP
 
 Test Case 1.) Ping\Fast Ping 3 destinations using PTF from the source address which used BGP Routes. Ping will run continuosly during FRR restart.
-    - Create Ping packet in PTF.
-    - Create Expected Packet.
-    - Sent Ping packet on port 1.
-    - Verify expected Packet on Port 2.
+    -  Create Ping packet in PTF.
+    -  Create Expected Packet.
+    -  Sent Ping packet on port 1.
+    -  Verify expected Packet on Port 2.
 
 Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
 
@@ -501,11 +516,11 @@ Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
     - Start FRR.
     - Observe Zebra logs, ip monitor, kernel routes and Zebra routes.
 
-**Details:**
+### 7.2 Detailed UTP:
 
-Test Case 1.) Ping\Fast Ping 3 destinations using PTF from the source address which used BGP Routes in DUT. Ping will run continuosly during FRR restart.
+#### Test Case 1.) Ping\Fast Ping 3 destinations using PTF from the source address which used BGP Routes in DUT. Ping will run continuosly during FRR restart.
 
-    - Verify expected Packet on Port 2.
+   **Verify expected Packet on Port 2.**
 
 For Example: If installed BGP routes are as below:
 ```
@@ -523,7 +538,7 @@ B>* 192.168.0.8/32 [20/0] via 10.0.0.1, Ethernet0, 00:00:29
 B>* 192.168.0.9/32 [20/0] via 10.0.0.1, Ethernet0, 00:00:29
 ```
 
-- Create Ping packet in PTF.
+**Create Ping packet in PTF.**
 
 PTF ICMP packet will be:
 ```
@@ -538,7 +553,7 @@ Packet:
 00:e0:ec:7b:ba:bb > 52:54:00:4b:bb:87, ethertype 802.1Q (0x8100), length 102: vlan 1681, p 0, ethertype IPv4, 192.168.0.6 > 10.0.0.0: ICMP echo request, id 19456, seq 9, length 64
 ```
 
-- Create Expected Packet.
+**Create Expected Packet.**
 ```
 exp_pkt = simple_icmp_packet(pktlen=pktlen,
                 eth_src=self.router_mac,
@@ -546,17 +561,17 @@ exp_pkt = simple_icmp_packet(pktlen=pktlen,
                 icmp_type=0)
 ```
 
-- Sent Ping packet on port 1.
+**Sent Ping packet on port 1.**
 ```
 send_packet(self, src_port, pkt)
 ```
 
-Then Verify the Packet on Port 2:
+**Then Verify the Packet on Port 2:**
 ```
 (matched_index, received) = verify_packet_any_port(self, masked_exp_pkt, [2]])
 ```
 
-Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
+####  Test Case 2.) Test add, change and delete in BGP prefixes across FRR restart.
 
 - Have 2 BGP peers publishing 5 prefixes each, where 2 prefixes are published from both peers.
 
@@ -788,5 +803,44 @@ Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
 ```
 
 
-Test Case 3.) Scaled testing: Perform FRR restart with  > 6 K routes published from at least 4 peers. [6500 routes with 32 peers, as per T1 topology], [6k routes and 4 BGP peers as per T0]
+#### Test Case 3.) Scaled testing: Perform FRR restart with  > 6 K routes published from at least 4 peers. [6500 routes with 32 peers, as per T1 topology], [6k routes and 4 BGP peers as per T0]
 Steps will be similar to Test case 2.
+
+##   DB schema
+    No Change.
+##   Flows and SAI APIs
+    N/A
+##  Debug dump and relevant logs
+Following logs will appear in Zebra at DEBUG level. For testing LOGs were added at NOTICE level.
+```
+Apr 23 22:05:59.589030 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 1 P 0.0.0.0/0 rn 0x556d54234ca0
+Apr 23 22:05:59.589301 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 2 P 192.168.0.1/32 rn 0x556d5423d780
+Apr 23 22:05:59.589378 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 3 P 192.168.0.2/32 rn 0x556d5423da00
+Apr 23 22:05:59.589691 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 4 P 192.168.0.3/32 rn 0x556d5423dc80
+Apr 23 22:05:59.589788 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 5 P 192.168.0.4/32 rn 0x556d5423df80
+Apr 23 22:05:59.589859 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 6 P 192.168.0.5/32 rn 0x556d5423e280
+Apr 23 22:05:59.589931 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 7 P 192.168.0.8/32 rn 0x556d5423ea00
+Apr 23 22:05:59.590001 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 8 P 100.1.0.1/32 rn 0x556d5423d280
+Apr 23 22:05:59.590072 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 9 P 192.168.0.6/32 rn 0x556d5423e500
+Apr 23 22:05:59.590142 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 10 P 100.1.0.2/32 rn 0x556d5423d500
+
+Apr 23 22:06:12.615442 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: timer_expire stats before flush: add 11, del 10
+Apr 23 22:06:12.615442 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: sweep, A 11 D 11 P 192.168.0.7/32 rn 0x556d5423e780
+Apr 23 22:06:12.615741 dut01 NOTICE bgp#zebra[85]: Send Delete to kernel rn 0x556d5423e780
+Apr 23 22:06:12.615824 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: timer_expire stats after flush: add 11, del 11
+```
+##  Memory consumption
+
+    Zebra will consume memory similar to -k option till timer with -K expires.
+
+##   Performance
+```
+    Zebra already perform sweep and entire rib list look up. So performance will not change.
+```
+##   Should call out if any platform specific code will be introduced and why. Need to avoid platform specific code from the design phase
+    N/A
+##   Future: error flows handling
+    Statistics are added to counts all routes for which new flag will be added\removed with -K option. This will be used for verification if Zebra contains any stale kernel routes.
+
+##   Future: show commands
+    N/A
