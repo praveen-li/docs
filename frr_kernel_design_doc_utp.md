@@ -9,6 +9,13 @@
 - [5. Low Level details](#5-low-level-details)
 - [6. Code Details](#6-code-details)
 - [7. Unit Test Plan](#7-unit-test-plan)
+- [8. DB schema](#8-db-schema)
+- [9. Flows and SAI APIs](#9-flows-and-sai-apis)
+- [10. Debug dump and relevant logs](#10-debug-dump-and-relevant-logs)
+- [11. Memory consumption](#11-memory-consumption)
+- [12. Performance](#12-performance)
+- [13. Error flows handling](#13-error-flows-handling)
+- [14. Show handling](#14-show-handling)
 
 ##  1. Problem Statement:
 > While s/w upgrade to FRR docker or while maintenence FRR docker restart, minimum disturbance to Control Plane Route (i.e Kernel Route) should happen. For some organisation, it is critical to keep control plane unreachability less than ~1 secs for critical services to work with switch while FRR docker restart.
@@ -806,11 +813,11 @@ Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
 #### Test Case 3.) Scaled testing: Perform FRR restart with  > 6 K routes published from at least 4 peers. [6500 routes with 32 peers, as per T1 topology], [6k routes and 4 BGP peers as per T0]
 Steps will be similar to Test case 2.
 
-##   DB schema
+##   8. DB schema
     No Change.
-##   Flows and SAI APIs
+##   9. Flows and SAI APIs
     N/A
-##  Debug dump and relevant logs
+##  10. Debug dump and relevant logs
 Following logs will appear in Zebra at DEBUG level. For testing LOGs were added at NOTICE level.
 ```
 Apr 23 22:05:59.589030 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: match, A 11 D 1 P 0.0.0.0/0 rn 0x556d54234ca0
@@ -829,18 +836,20 @@ Apr 23 22:06:12.615442 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: sweep, A 11
 Apr 23 22:06:12.615741 dut01 NOTICE bgp#zebra[85]: Send Delete to kernel rn 0x556d5423e780
 Apr 23 22:06:12.615824 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: timer_expire stats after flush: add 11, del 11
 ```
-##  Memory consumption
+## 11.  Memory consumption
 
     Zebra will consume memory similar to -k option till timer with -K expires.
 
-##   Performance
+##   12. Performance
 ```
     Zebra already perform sweep and entire rib list look up. So performance will not change.
 ```
+
 ##   Should call out if any platform specific code will be introduced and why. Need to avoid platform specific code from the design phase
     N/A
-##   Future: error flows handling
+    
+##   13. Error flows handling
     Statistics are added to counts all routes for which new flag will be added\removed with -K option. This will be used for verification if Zebra contains any stale kernel routes.
 
-##   Future: show commands
+##   14. Show commands
     N/A
