@@ -308,7 +308,7 @@ Current behavior will result in:
 
 ### 5.2 After Fix:
 
-<Image2>
+![](https://github.com/praveen-li/docs/blob/master/After%20frr_kernel%20fix.png)
 
 ```
 1.) Zebra reads kernel routes including previous instance of Zebra routes and mark them with ZEBRA_FLAG_KERNEL_STALE_RT.
