@@ -868,3 +868,6 @@ Apr 23 22:06:12.615824 dut01 NOTICE bgp#zebra[85]: kernel_reconcile: timer_expir
 
 ##   14. Show commands
     N/A
+## External reference
+https://github.com/FRRouting/frr/pull/4197
+Final UTP results will be updated here.
